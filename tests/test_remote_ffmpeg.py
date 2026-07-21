@@ -113,7 +113,11 @@ class RemoteFFmpegTests(unittest.IsolatedAsyncioTestCase):
                 output.write_bytes(b"local")
                 return 0, b"", b""
 
+            attempts = 0
+
             async def handler(_request: httpx.Request) -> httpx.Response:
+                nonlocal attempts
+                attempts += 1
                 return httpx.Response(503, json={"error": "unavailable", "message": "try later"})
 
             environment = {
@@ -123,12 +127,50 @@ class RemoteFFmpegTests(unittest.IsolatedAsyncioTestCase):
                 "UA_REMOTE_FFMPEG_PATH_ROOT": os.fspath(root),
                 "UA_REMOTE_FFMPEG_FALLBACK": "true",
             }
-            with patch.dict(os.environ, environment, clear=True):
+            with patch.dict(os.environ, environment, clear=True), patch("src.remote_ffmpeg.asyncio.sleep", return_value=None):
                 result = await run_screenshot_ffmpeg(local_runner, os.fspath(source), os.fspath(output), {}, transport=httpx.MockTransport(handler))
 
             self.assertEqual(result, (0, b"", b""))
             self.assertEqual(output.read_bytes(), b"local")
             self.assertEqual(calls, 1)
+            self.assertEqual(attempts, 3)
+
+    async def test_busy_worker_retries_then_succeeds_remotely(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "movie.mkv"
+            source.write_bytes(b"media")
+            output = root / "output.png"
+            attempts = 0
+
+            async def local_runner() -> tuple[int, bytes, bytes]:
+                self.fail("local fallback should not run after a transient busy response")
+
+            async def handler(_request: httpx.Request) -> httpx.Response:
+                nonlocal attempts
+                attempts += 1
+                if attempts < 3:
+                    return httpx.Response(409, json={"error": "busy"})
+                return httpx.Response(200, content=valid_png(), headers={"content-type": "image/png"})
+
+            environment = {
+                "UA_REMOTE_FFMPEG_ENABLED": "true",
+                "UA_REMOTE_FFMPEG_URL": "http://worker:8080",
+                "UA_REMOTE_FFMPEG_TOKEN": "secret",
+                "UA_REMOTE_FFMPEG_PATH_ROOT": os.fspath(root),
+            }
+            with patch.dict(os.environ, environment, clear=True), patch("src.remote_ffmpeg.asyncio.sleep", return_value=None):
+                result = await run_screenshot_ffmpeg(
+                    local_runner,
+                    os.fspath(source),
+                    os.fspath(output),
+                    {},
+                    transport=httpx.MockTransport(handler),
+                )
+
+            self.assertEqual(result, (0, b"", b""))
+            self.assertEqual(attempts, 3)
+            self.assertEqual(output.read_bytes(), valid_png())
 
     async def test_processing_settings_override_container_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
