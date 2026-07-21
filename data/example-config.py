@@ -1081,6 +1081,24 @@ config = {
             "watch_folder": "",
         },
     },
+    "PROCESSING": {
+        # Optional LAN worker settings. Values saved here override matching
+        # UA_REMOTE_* container environment variables for future uploads.
+        # Leave both enabled toggles False to keep all processing local.
+        "remote_mkbrr_enabled": False,
+        "remote_mkbrr_url": "",
+        "remote_mkbrr_token": "",
+        "remote_mkbrr_timeout": 3600,
+        "remote_mkbrr_fallback": True,
+        "remote_mkbrr_path_root": "/media/torrents",
+
+        "remote_ffmpeg_enabled": False,
+        "remote_ffmpeg_url": "",
+        "remote_ffmpeg_token": "",
+        "remote_ffmpeg_timeout": 600,
+        "remote_ffmpeg_fallback": True,
+        "remote_ffmpeg_path_root": "/media/torrents",
+    },
     "DISCORD": {
         # Set to True to enable Discord bot functionality
         "use_discord": False,

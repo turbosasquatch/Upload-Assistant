@@ -2700,6 +2700,16 @@ function ConfigApp() {
         if (Array.isArray(update.path) && update.path.length >= 2) {
           const sectionName = String(update.path[0]);
           const subsectionName = String(update.path[1]);
+          // PROCESSING is an optional top-level section. Create it before
+          // writing its first field so a fresh config.py can save worker
+          // settings without requiring a manual file edit.
+          if (sectionName === 'PROCESSING') {
+            const keyId = sectionName;
+            if (!createdKeys.has(keyId)) {
+              toCreate.push([sectionName]);
+              createdKeys.add(keyId);
+            }
+          }
           const section = sections.find(s => s.section && String(s.section).toLowerCase() === sectionName.toLowerCase());
           if (section && Array.isArray(section.items)) {
             const subsectionItem = section.items.find(it => it.key && String(it.key).toUpperCase() === subsectionName.toUpperCase());
@@ -2973,7 +2983,7 @@ function ConfigApp() {
                             : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200'
                       }`}
                     >
-                      {section.section}
+                      {section.section === 'PROCESSING' ? 'Processing' : section.section}
                     </button>
                   );
                 })}

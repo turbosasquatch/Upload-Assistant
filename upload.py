@@ -1501,6 +1501,13 @@ async def do_the_thing(base_dir: str) -> None:
         if path.endswith('"'):
             path = path[:-1]
 
+        processing_config = config.get('PROCESSING', {})
+        if isinstance(processing_config, dict):
+            # Keep worker credentials out of job metadata files. The worker
+            # clients still fall back to container environment values when
+            # this optional config section is absent.
+            TorrentCreator.set_processing_config(processing_config)
+
         is_binary = await get_mkbrr_path(meta, base_dir)
         if not meta['mkbrr']:
             try:

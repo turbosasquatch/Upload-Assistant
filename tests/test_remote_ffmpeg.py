@@ -130,6 +130,39 @@ class RemoteFFmpegTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(output.read_bytes(), b"local")
             self.assertEqual(calls, 1)
 
+    async def test_processing_settings_override_container_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "movie.mkv"
+            source.write_bytes(b"media")
+            output = root / "output.png"
+
+            async def local_runner() -> tuple[int, bytes, bytes]:
+                self.fail("local runner should not be used")
+
+            async def handler(request: httpx.Request) -> httpx.Response:
+                self.assertEqual(request.headers["Authorization"], "Bearer from-processing-tab")
+                return httpx.Response(200, content=valid_png(), headers={"content-type": "image/png"})
+
+            settings = {
+                "remote_ffmpeg_enabled": True,
+                "remote_ffmpeg_url": "http://worker:8080",
+                "remote_ffmpeg_token": "from-processing-tab",
+                "remote_ffmpeg_path_root": os.fspath(root),
+            }
+            with patch.dict(os.environ, {"UA_REMOTE_FFMPEG_ENABLED": "false"}, clear=True):
+                result = await run_screenshot_ffmpeg(
+                    local_runner,
+                    os.fspath(source),
+                    os.fspath(output),
+                    {},
+                    settings=settings,
+                    transport=httpx.MockTransport(handler),
+                )
+
+            self.assertEqual(result, (0, b"", b""))
+            self.assertEqual(output.read_bytes(), valid_png())
+
     async def test_invalid_helper_output_does_not_replace_existing_image(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

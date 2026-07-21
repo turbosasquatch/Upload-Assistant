@@ -103,13 +103,32 @@ class TorrentCreator:
     _create_torrent_semaphore = asyncio.Semaphore(1)
     _create_torrent_inflight = 0
     _torf_start_time = time.time()
+    _processing_config: Mapping[str, Any] = {}
 
-    @staticmethod
-    def _env_flag(name: str, default: bool) -> bool:
-        value = os.getenv(name)
+    @classmethod
+    def set_processing_config(cls, settings: Mapping[str, Any]) -> None:
+        """Set UI-configured worker settings without placing secrets in meta files."""
+        cls._processing_config = dict(settings)
+
+    @classmethod
+    def _processing_value(cls, meta: Mapping[str, Any], key: str, env_name: str, default: object) -> object:
+        processing = meta.get('processing_config')
+        if not isinstance(processing, Mapping):
+            processing = cls._processing_config
+        if isinstance(processing, Mapping) and key in processing:
+            return processing[key]
+        return os.getenv(env_name, str(default))
+
+    @classmethod
+    def _processing_flag(cls, meta: Mapping[str, Any], key: str, env_name: str, default: bool) -> bool:
+        value = cls._processing_value(meta, key, env_name, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
         if value is None:
             return default
-        return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+        return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
 
     @staticmethod
     def _remote_relative_path(path: Union[str, os.PathLike[str]], configured_root: str) -> str:
@@ -143,22 +162,24 @@ class TorrentCreator:
         path: Union[str, os.PathLike[str]],
         output_path: str,
         payload: Mapping[str, Any],
+        processing: Optional[Mapping[str, Any]] = None,
         transport: Optional[httpx.AsyncBaseTransport] = None,
     ) -> None:
-        url = os.getenv('UA_REMOTE_MKBRR_URL', '').strip()
-        token = os.getenv('UA_REMOTE_MKBRR_TOKEN', '').strip()
+        settings = processing if isinstance(processing, Mapping) else {}
+        url = str(settings.get('remote_mkbrr_url', os.getenv('UA_REMOTE_MKBRR_URL', ''))).strip()
+        token = str(settings.get('remote_mkbrr_token', os.getenv('UA_REMOTE_MKBRR_TOKEN', ''))).strip()
         if not url or not token:
             raise RuntimeError('UA_REMOTE_MKBRR_URL and UA_REMOTE_MKBRR_TOKEN are required')
 
         try:
-            timeout = float(os.getenv('UA_REMOTE_MKBRR_TIMEOUT', '3600'))
+            timeout = float(settings.get('remote_mkbrr_timeout', os.getenv('UA_REMOTE_MKBRR_TIMEOUT', '3600')))
             if timeout <= 0:
                 raise ValueError
         except ValueError as error:
             raise ValueError('UA_REMOTE_MKBRR_TIMEOUT must be a positive number') from error
 
         request_payload = dict(payload)
-        request_payload['path'] = cls._remote_relative_path(path, os.getenv('UA_REMOTE_MKBRR_PATH_ROOT', '/media/torrents'))
+        request_payload['path'] = cls._remote_relative_path(path, str(settings.get('remote_mkbrr_path_root', os.getenv('UA_REMOTE_MKBRR_PATH_ROOT', '/media/torrents'))))
         headers = {'Authorization': f'Bearer {token}'}
         async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
             response = await client.post(f"{url.rstrip('/')}/v1/mkbrr", headers=headers, json=request_payload)
@@ -337,7 +358,7 @@ class TorrentCreator:
                             raise ValueError(f"Path does not exist: {path}")
                         output_path = os.path.join(meta['base_dir'], "tmp", meta['uuid'], f"{output_filename}.torrent")
 
-                        if cls._env_flag('UA_REMOTE_MKBRR_ENABLED', False):
+                        if cls._processing_flag(meta, 'remote_mkbrr_enabled', 'UA_REMOTE_MKBRR_ENABLED', False):
                             remote_piece_length = 0
                             if piece_size and not tracker_url:
                                 try:
@@ -362,11 +383,19 @@ class TorrentCreator:
                                 'exclude': remote_exclude,
                             }
                             try:
-                                await cls.create_remote_mkbrr(path, output_path, remote_payload)
+                                processing = meta.get('processing_config')
+                                if not isinstance(processing, Mapping):
+                                    processing = cls._processing_config
+                                await cls.create_remote_mkbrr(
+                                    path,
+                                    output_path,
+                                    remote_payload,
+                                    processing if isinstance(processing, Mapping) else None,
+                                )
                                 return output_path
                             except Exception as error:
                                 console.print(f"[bold red]Error using remote mkbrr: {error}")
-                                if not cls._env_flag('UA_REMOTE_MKBRR_FALLBACK', True):
+                                if not cls._processing_flag(meta, 'remote_mkbrr_fallback', 'UA_REMOTE_MKBRR_FALLBACK', True):
                                     raise
                                 console.print("[yellow]Falling back to local mkbrr")
 

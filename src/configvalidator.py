@@ -9,7 +9,7 @@ from typing import Any, Optional, cast
 REQUIRED_SECTIONS = ["DEFAULT", "TRACKERS"]
 
 # Optional top-level sections
-OPTIONAL_SECTIONS = ["IMAGES", "TORRENT_CLIENTS", "DISCORD"]
+OPTIONAL_SECTIONS = ["IMAGES", "TORRENT_CLIENTS", "DISCORD", "PROCESSING"]
 
 # Required keys in DEFAULT section (critical for operation)
 REQUIRED_DEFAULT_KEYS: dict[str, type] = {

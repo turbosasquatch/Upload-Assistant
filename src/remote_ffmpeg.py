@@ -17,15 +17,25 @@ FFmpegResult = tuple[Optional[int], bytes, bytes]
 MAX_REMOTE_PNG_BYTES = 64 * 1024 * 1024
 
 
-def _env_flag(name: str, default: bool) -> bool:
-    value = os.getenv(name)
+def _setting(settings: Optional[Mapping[str, object]], key: str, env_name: str, default: object) -> object:
+    if settings and key in settings:
+        return settings[key]
+    return os.getenv(env_name, str(default))
+
+
+def _flag(settings: Optional[Mapping[str, object]], key: str, env_name: str, default: bool) -> bool:
+    value = _setting(settings, key, env_name, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def remote_ffmpeg_enabled() -> bool:
-    return _env_flag("UA_REMOTE_FFMPEG_ENABLED", False)
+def remote_ffmpeg_enabled(settings: Optional[Mapping[str, object]] = None) -> bool:
+    return _flag(settings, "remote_ffmpeg_enabled", "UA_REMOTE_FFMPEG_ENABLED", False)
 
 
 def _relative_media_path(path: str, configured_root: str) -> str:
@@ -104,26 +114,27 @@ async def run_screenshot_ffmpeg(
     path: str,
     output_path: str,
     parameters: Mapping[str, object],
+    settings: Optional[Mapping[str, object]] = None,
     transport: Optional[httpx.AsyncBaseTransport] = None,
 ) -> FFmpegResult:
     """Run an eligible screenshot remotely, preserving the supplied local fallback."""
-    if not remote_ffmpeg_enabled():
+    if not remote_ffmpeg_enabled(settings):
         return await local_runner()
 
     try:
-        url = os.getenv("UA_REMOTE_FFMPEG_URL", "").strip()
-        token = os.getenv("UA_REMOTE_FFMPEG_TOKEN", "").strip()
+        url = str(_setting(settings, "remote_ffmpeg_url", "UA_REMOTE_FFMPEG_URL", "")).strip()
+        token = str(_setting(settings, "remote_ffmpeg_token", "UA_REMOTE_FFMPEG_TOKEN", "")).strip()
         if not url or not token:
             raise RuntimeError("UA_REMOTE_FFMPEG_URL and UA_REMOTE_FFMPEG_TOKEN are required")
         try:
-            timeout = float(os.getenv("UA_REMOTE_FFMPEG_TIMEOUT", "180"))
+            timeout = float(_setting(settings, "remote_ffmpeg_timeout", "UA_REMOTE_FFMPEG_TIMEOUT", 180))
             if timeout <= 0:
                 raise ValueError
         except ValueError as error:
             raise ValueError("UA_REMOTE_FFMPEG_TIMEOUT must be a positive number") from error
 
         payload = dict(parameters)
-        payload["path"] = _relative_media_path(path, os.getenv("UA_REMOTE_FFMPEG_PATH_ROOT", "/media/torrents"))
+        payload["path"] = _relative_media_path(path, str(_setting(settings, "remote_ffmpeg_path_root", "UA_REMOTE_FFMPEG_PATH_ROOT", "/media/torrents")))
         headers = {"Authorization": f"Bearer {token}", "Accept": "image/png"}
         async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
             response = await client.post(f"{url.rstrip('/')}/v1/ffmpeg", headers=headers, json=payload)
@@ -134,7 +145,7 @@ async def run_screenshot_ffmpeg(
         return 0, b"", b""
     except Exception as error:
         console.print(f"[bold red]Error using remote FFmpeg: {error}")
-        if not _env_flag("UA_REMOTE_FFMPEG_FALLBACK", True):
+        if not _flag(settings, "remote_ffmpeg_fallback", "UA_REMOTE_FFMPEG_FALLBACK", True):
             raise
         console.print("[yellow]Falling back to local FFmpeg")
         return await local_runner()

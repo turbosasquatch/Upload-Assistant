@@ -12,6 +12,34 @@ from src.torrentcreate import TorrentCreator
 
 
 class RemoteMkbrrTests(unittest.IsolatedAsyncioTestCase):
+    async def test_processing_settings_enable_remote_mkbrr(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'release.mkv'
+            source.write_bytes(b'media')
+            (root / 'tmp' / 'test-id').mkdir(parents=True)
+            output = root / 'tmp' / 'test-id' / 'BASE.torrent'
+            meta = {
+                'base_dir': os.fspath(root), 'uuid': 'test-id', 'mkbrr': True, 'mkbrr_threads': '0',
+                'keep_folder': False, 'isdir': False, 'is_disc': False, 'filelist': [os.fspath(source)],
+                'randomized': 0, 'trackers': [], 'debug': False,
+            }
+            settings = {
+                'remote_mkbrr_enabled': True, 'remote_mkbrr_url': 'http://worker:8080',
+                'remote_mkbrr_token': 'from-processing-tab', 'remote_mkbrr_path_root': os.fspath(root),
+            }
+            valid_torrent = SimpleNamespace(metainfo={'info': {'name': 'release', 'piece length': 4_194_304, 'pieces': b'x' * 20}})
+            with patch.dict(os.environ, {'UA_REMOTE_MKBRR_ENABLED': 'false'}, clear=True), patch.object(
+                TorrentCreator, 'create_remote_mkbrr', autospec=True
+            ) as remote, patch('src.torrentcreate.Torrent.read', return_value=valid_torrent):
+                TorrentCreator.set_processing_config(settings)
+                try:
+                    await TorrentCreator.create_torrent(meta, source, 'BASE')
+                    remote.assert_awaited_once()
+                    self.assertEqual(remote.await_args.args[3]['remote_mkbrr_token'], 'from-processing-tab')
+                finally:
+                    TorrentCreator.set_processing_config({})
+
     async def test_remote_failure_with_fallback_runs_local_mkbrr(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
