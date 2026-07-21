@@ -158,7 +158,7 @@ class TorrentCreator:
             raise ValueError('UA_REMOTE_MKBRR_TIMEOUT must be a positive number') from error
 
         request_payload = dict(payload)
-        request_payload['path'] = cls._remote_relative_path(path, os.getenv('UA_REMOTE_MKBRR_PATH_ROOT', '/mnt/user/torrents'))
+        request_payload['path'] = cls._remote_relative_path(path, os.getenv('UA_REMOTE_MKBRR_PATH_ROOT', '/media/torrents'))
         headers = {'Authorization': f'Bearer {token}'}
         async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
             response = await client.post(f"{url.rstrip('/')}/v1/mkbrr", headers=headers, json=request_payload)

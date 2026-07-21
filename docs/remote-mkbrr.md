@@ -10,7 +10,7 @@ UA_REMOTE_MKBRR_URL=http://mac-worker:8080
 UA_REMOTE_MKBRR_TOKEN=replace-with-a-long-random-token
 UA_REMOTE_MKBRR_TIMEOUT=3600
 UA_REMOTE_MKBRR_FALLBACK=true
-UA_REMOTE_MKBRR_PATH_ROOT=/mnt/user/torrents
+UA_REMOTE_MKBRR_PATH_ROOT=/media/torrents
 ```
 
 `UA_REMOTE_MKBRR_PATH_ROOT` is the local root shared with the worker. Upload Assistant sends only the path relative to this root; the worker resolves it beneath its own configured media root. A source path outside this root is rejected.
