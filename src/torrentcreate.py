@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Union
 
 import cli_ui
+import httpx
 import torf
 from torf import Torrent
 from typing_extensions import TypeAlias
@@ -102,6 +103,67 @@ class TorrentCreator:
     _create_torrent_semaphore = asyncio.Semaphore(1)
     _create_torrent_inflight = 0
     _torf_start_time = time.time()
+
+    @staticmethod
+    def _env_flag(name: str, default: bool) -> bool:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+    @staticmethod
+    def _remote_relative_path(path: Union[str, os.PathLike[str]], configured_root: str) -> str:
+        path_root = os.path.realpath(configured_root)
+        source_path = os.path.realpath(os.fspath(path))
+        try:
+            if os.path.commonpath((path_root, source_path)) != path_root:
+                raise ValueError
+        except ValueError as error:
+            raise ValueError(f'Path is outside UA_REMOTE_MKBRR_PATH_ROOT: {path}') from error
+        return os.path.relpath(source_path, path_root)
+
+    @staticmethod
+    def _write_valid_remote_torrent(content: bytes, output_path: str) -> None:
+        temp_path = f'{output_path}.remote.tmp'
+        try:
+            with open(temp_path, 'wb') as torrent_file:
+                torrent_file.write(content)
+            torrent = Torrent.read(temp_path)
+            info = torrent.metainfo.get('info')
+            if not isinstance(info, Mapping) or not info.get('name') or not info.get('piece length') or 'pieces' not in info:
+                raise ValueError('Remote response is not a valid torrent')
+            os.replace(temp_path, output_path)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(temp_path)
+
+    @classmethod
+    async def create_remote_mkbrr(
+        cls,
+        path: Union[str, os.PathLike[str]],
+        output_path: str,
+        payload: Mapping[str, Any],
+        transport: Optional[httpx.AsyncBaseTransport] = None,
+    ) -> None:
+        url = os.getenv('UA_REMOTE_MKBRR_URL', '').strip()
+        token = os.getenv('UA_REMOTE_MKBRR_TOKEN', '').strip()
+        if not url or not token:
+            raise RuntimeError('UA_REMOTE_MKBRR_URL and UA_REMOTE_MKBRR_TOKEN are required')
+
+        try:
+            timeout = float(os.getenv('UA_REMOTE_MKBRR_TIMEOUT', '3600'))
+            if timeout <= 0:
+                raise ValueError
+        except ValueError as error:
+            raise ValueError('UA_REMOTE_MKBRR_TIMEOUT must be a positive number') from error
+
+        request_payload = dict(payload)
+        request_payload['path'] = cls._remote_relative_path(path, os.getenv('UA_REMOTE_MKBRR_PATH_ROOT', '/mnt/user/torrents'))
+        headers = {'Authorization': f'Bearer {token}'}
+        async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
+            response = await client.post(f"{url.rstrip('/')}/v1/mkbrr", headers=headers, json=request_payload)
+            response.raise_for_status()
+        await asyncio.to_thread(cls._write_valid_remote_torrent, response.content, output_path)
 
     @staticmethod
     def calculate_piece_size(
@@ -273,11 +335,45 @@ class TorrentCreator:
                         # Validate input path to prevent potential command injection
                         if not os.path.exists(path):
                             raise ValueError(f"Path does not exist: {path}")
+                        output_path = os.path.join(meta['base_dir'], "tmp", meta['uuid'], f"{output_filename}.torrent")
+
+                        if cls._env_flag('UA_REMOTE_MKBRR_ENABLED', False):
+                            remote_piece_length = 0
+                            if piece_size and not tracker_url:
+                                try:
+                                    max_size_bytes = int(piece_size) * 1024 * 1024
+                                    remote_piece_length = min(27, max(16, math.floor(math.log2(max_size_bytes))))
+                                except (ValueError, TypeError):
+                                    pass
+
+                            remote_exclude: list[str] = []
+                            if not meta.get('is_disc', False):
+                                remote_exclude.append(cls.build_mkbrr_exclude_string(str(path), meta['filelist']))
+                            remote_max_piece_length = 0
+                            if not piece_size and not tracker_url and not any(tracker in meta.get('trackers', []) for tracker in ['HDB', 'PTP', 'MTV']):
+                                remote_max_piece_length = 27
+                            remote_payload = {
+                                'tracker_url': tracker_url or '',
+                                'randomized': int(meta.get('randomized', 0)) >= 1,
+                                'piece_length': remote_piece_length,
+                                'max_piece_length': remote_max_piece_length,
+                                'workers': int(meta.get('mkbrr_threads', '0')),
+                                'include': [],
+                                'exclude': remote_exclude,
+                            }
+                            try:
+                                await cls.create_remote_mkbrr(path, output_path, remote_payload)
+                                return output_path
+                            except Exception as error:
+                                console.print(f"[bold red]Error using remote mkbrr: {error}")
+                                if not cls._env_flag('UA_REMOTE_MKBRR_FALLBACK', True):
+                                    raise
+                                console.print("[yellow]Falling back to local mkbrr")
+
                         mkbrr_binary = cls.get_mkbrr_path(meta)
                         # Validate mkbrr binary exists and is executable
                         if not os.path.exists(mkbrr_binary):
                             raise FileNotFoundError(f"mkbrr binary not found: {mkbrr_binary}")
-                        output_path = os.path.join(meta['base_dir'], "tmp", meta['uuid'], f"{output_filename}.torrent")
 
                         # Ensure executable permission for non-Windows systems
                         if not sys.platform.startswith("win"):
