@@ -15,6 +15,8 @@ from src.console import console
 
 FFmpegResult = tuple[Optional[int], bytes, bytes]
 MAX_REMOTE_PNG_BYTES = 64 * 1024 * 1024
+TRANSIENT_WORKER_STATUSES = {409, 429, 503}
+REMOTE_BUSY_ATTEMPTS = 3
 
 
 def _setting(settings: Optional[Mapping[str, object]], key: str, env_name: str, default: object) -> object:
@@ -137,8 +139,17 @@ async def run_screenshot_ffmpeg(
         payload["path"] = _relative_media_path(path, str(_setting(settings, "remote_ffmpeg_path_root", "UA_REMOTE_FFMPEG_PATH_ROOT", "/media/torrents")))
         headers = {"Authorization": f"Bearer {token}", "Accept": "image/png"}
         async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
-            response = await client.post(f"{url.rstrip('/')}/v1/ffmpeg", headers=headers, json=payload)
-            response.raise_for_status()
+            for attempt in range(REMOTE_BUSY_ATTEMPTS):
+                response = await client.post(f"{url.rstrip('/')}/v1/ffmpeg", headers=headers, json=payload)
+                if response.status_code not in TRANSIENT_WORKER_STATUSES or attempt == REMOTE_BUSY_ATTEMPTS - 1:
+                    response.raise_for_status()
+                    break
+                delay = 0.5 * (2**attempt)
+                console.print(
+                    f"[yellow]Remote FFmpeg worker busy/unavailable (HTTP {response.status_code}); "
+                    f"retrying in {delay:.1f}s[/yellow]"
+                )
+                await asyncio.sleep(delay)
         if response.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "image/png":
             raise ValueError("Remote FFmpeg response has an unexpected content type")
         await asyncio.to_thread(_write_remote_png, response.content, output_path)
