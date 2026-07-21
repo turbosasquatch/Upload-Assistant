@@ -32,15 +32,18 @@ tone_map = False
 ffmpeg_compression = "6"
 algorithm = "mobius"
 desat = 10.0
+processing_config: dict[str, Any] = {}
 
 
 def _apply_config(config: Mapping[str, Any]) -> None:
     global default_config, task_limit, cutoff
     global ffmpeg_limit, ffmpeg_is_good, use_libplacebo
-    global tone_map, ffmpeg_compression, algorithm, desat
+    global tone_map, ffmpeg_compression, algorithm, desat, processing_config
 
     default_section = config.get('DEFAULT', {})
     default_config = cast(dict[str, Any], default_section) if isinstance(default_section, Mapping) else {}
+    processing_section = config.get('PROCESSING', {})
+    processing_config = cast(dict[str, Any], processing_section) if isinstance(processing_section, Mapping) else {}
 
     try:
         task_limit = int(default_config.get('process_limit', 1) or 1)
@@ -1390,7 +1393,7 @@ async def capture_screenshot(args: tuple[int, str, float, str, float, float, flo
                     async def runner() -> tuple[Optional[int], bytes, bytes]:
                         return await asyncio.wait_for(run_ffmpeg(info_command), timeout=timeout_sec)
 
-                    if not remote_eligible or not remote_ffmpeg_enabled():
+                    if not remote_eligible or not remote_ffmpeg_enabled(processing_config):
                         return await runner()
 
                     remote_parameters: dict[str, object] = {
@@ -1404,7 +1407,7 @@ async def capture_screenshot(args: tuple[int, str, float, str, float, float, flo
                         'desaturation': desat,
                         'compression_level': int(ffmpeg_compression),
                     }
-                    return await run_screenshot_ffmpeg(runner, path, image_path, remote_parameters)
+                    return await run_screenshot_ffmpeg(runner, path, image_path, remote_parameters, settings=processing_config)
                 except asyncio.TimeoutError:
                     return -1, b"", b"Timeout"
 
