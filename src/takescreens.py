@@ -20,6 +20,7 @@ from pymediainfo import MediaInfo
 
 from src.cleanup import cleanup_manager
 from src.console import console
+from src.remote_ffmpeg import remote_ffmpeg_enabled, run_screenshot_ffmpeg
 
 default_config: dict[str, Any] = {}
 task_limit = 1
@@ -1384,9 +1385,26 @@ async def capture_screenshot(args: tuple[int, str, float, str, float, float, flo
                     console.print("[cyan]FFmpeg command: (unable to render command)[/cyan]", emoji=False)
 
             # --- Execute with retry/fallback if libplacebo fails ---
-            async def run_cmd(info_command: Any, timeout_sec: float) -> tuple[Optional[int], bytes, bytes]:
+            async def run_cmd(info_command: Any, timeout_sec: float, remote_tonemap: str, remote_eligible: bool = True) -> tuple[Optional[int], bytes, bytes]:
                 try:
-                    return await asyncio.wait_for(run_ffmpeg(info_command), timeout=timeout_sec)
+                    async def runner() -> tuple[Optional[int], bytes, bytes]:
+                        return await asyncio.wait_for(run_ffmpeg(info_command), timeout=timeout_sec)
+
+                    if not remote_eligible or not remote_ffmpeg_enabled():
+                        return await runner()
+
+                    remote_parameters: dict[str, object] = {
+                        'seek_seconds': ss_time,
+                        'width': width,
+                        'height': height,
+                        'sar_width': w_sar,
+                        'sar_height': h_sar,
+                        'tonemap': remote_tonemap,
+                        'tonemap_algorithm': algorithm,
+                        'desaturation': desat,
+                        'compression_level': int(ffmpeg_compression),
+                    }
+                    return await run_screenshot_ffmpeg(runner, path, image_path, remote_parameters)
                 except asyncio.TimeoutError:
                     return -1, b"", b"Timeout"
 
@@ -1394,13 +1412,20 @@ async def capture_screenshot(args: tuple[int, str, float, str, float, float, flo
             if loglevel == 'verbose' or (meta and meta.get('debug', False)):
                 console.print(f"[cyan]FFmpeg command: {' '.join(info_cmd.compile())}[/cyan]", emoji=False)
 
-            returncode, stdout, stderr = await run_cmd(info_cmd, 140)  # a bit longer for first pass
+            remote_tonemap = 'zscale' if hdr_tonemap else 'none'
+            if hdr_tonemap and meta.get('libplacebo'):
+                # The remote contract deliberately cannot accept arbitrary filters and does not
+                # expose libplacebo. Preserve this first pass locally; the existing zscale fallback
+                # below remains eligible for remote execution.
+                returncode, stdout, stderr = await run_cmd(info_cmd, 140, remote_tonemap, remote_eligible=False)
+            else:
+                returncode, stdout, stderr = await run_cmd(info_cmd, 140, remote_tonemap)  # a bit longer for first pass
             if returncode != 0 and hdr_tonemap and meta.get('libplacebo'):
                 # Retry once (shader compile might have delayed first invocation)
                 if loglevel == 'verbose' or meta.get('debug', False):
                     console.print("[yellow]First libplacebo attempt failed; retrying once...[/yellow]")
                 await asyncio.sleep(1.0)
-                returncode, stdout, stderr = await run_cmd(info_cmd, 160)
+                returncode, stdout, stderr = await run_cmd(info_cmd, 160, remote_tonemap, remote_eligible=False)
 
             if returncode != 0 and hdr_tonemap and meta.get('libplacebo'):
                 # Fallback: switch to zscale tonemap chain
@@ -1421,7 +1446,7 @@ async def capture_screenshot(args: tuple[int, str, float, str, float, float, flo
                 info_cmd = build_cmd(use_libplacebo=False)
                 if loglevel == 'verbose' or meta.get('debug', False):
                     console.print(f"[cyan]Fallback FFmpeg command: {' '.join(info_cmd.compile())}[/cyan]", emoji=False)
-                returncode, stdout, stderr = await run_cmd(info_cmd, 140)
+                returncode, stdout, stderr = await run_cmd(info_cmd, 140, 'zscale')
                 cmd = info_cmd  # for logging below
 
             if returncode == 0 and os.path.exists(image_path):
