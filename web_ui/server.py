@@ -1394,8 +1394,15 @@ def _replace_config_value_in_source(source: str, key_path: list[str], new_value:
 
                 # Reconstruct the source with the new key using proper formatting
                 return _format_config_tree(tree)
-            else:
-                raise ValueError(f"Key not found in config: {key}")
+            # Create missing intermediate dictionaries. This permits optional
+            # top-level config sections, such as PROCESSING, to be saved from
+            # the WebUI without first replacing the whole section with {}.
+            new_key_node = ast.Constant(value=key)
+            new_dict_node = ast.Dict(keys=[], values=[])
+            current_dict.keys.append(new_key_node)
+            current_dict.values.append(new_dict_node)
+            current_dict = new_dict_node
+            continue
 
         if target_node is not None and i < len(key_path) - 1:
             raise ValueError("Invalid path for config update")
